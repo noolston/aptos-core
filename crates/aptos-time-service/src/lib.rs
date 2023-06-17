@@ -99,6 +99,11 @@ impl TimeService {
             ts => panic!("Unexpected TimeService, expected MockTimeService: {:?}", ts),
         }
     }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn from_mock(mock: MockTimeService) -> Self {
+        Self::MockTimeService(mock)
+    }
 }
 
 impl Default for TimeService {

@@ -6,16 +6,10 @@ use aptos_config::{
     config::StorageServiceConfig,
     network_id::{NetworkId, PeerNetworkId},
 };
-use aptos_storage_service_types::{
-    requests::{DataRequest, NewTransactionsOrOutputsWithProofRequest, StorageServiceRequest},
-    responses::DataResponse,
+use aptos_storage_service_types::requests::{
+    DataRequest, NewTransactionsOrOutputsWithProofRequest, StorageServiceRequest,
 };
-use aptos_types::{
-    epoch_change::EpochChangeProof,
-    ledger_info::LedgerInfoWithSignatures,
-    transaction::{TransactionListWithProof, TransactionOutputListWithProof},
-    PeerId,
-};
+use aptos_types::{epoch_change::EpochChangeProof, PeerId};
 use claims::assert_none;
 use futures::channel::oneshot::Receiver;
 
@@ -100,7 +94,7 @@ async fn test_get_new_transactions_or_outputs() {
 
             // Verify a response is received and that it contains the correct data
             if fallback_to_transactions {
-                verify_new_transactions_or_outputs_with_proof(
+                utils::verify_new_transactions_or_outputs_with_proof(
                     &mut mock_client,
                     response_receiver,
                     Some(transaction_list_with_proof),
@@ -109,7 +103,7 @@ async fn test_get_new_transactions_or_outputs() {
                 )
                 .await;
             } else {
-                verify_new_transactions_or_outputs_with_proof(
+                utils::verify_new_transactions_or_outputs_with_proof(
                     &mut mock_client,
                     response_receiver,
                     None,
@@ -240,7 +234,7 @@ async fn test_get_new_transactions_or_outputs_different_network() {
 
             // Verify a response is received and that it contains the correct data
             if fallback_to_transactions {
-                verify_new_transactions_or_outputs_with_proof(
+                utils::verify_new_transactions_or_outputs_with_proof(
                     &mut mock_client,
                     response_receiver_1,
                     Some(transaction_list_with_proof.clone()),
@@ -248,7 +242,7 @@ async fn test_get_new_transactions_or_outputs_different_network() {
                     highest_ledger_info.clone(),
                 )
                 .await;
-                verify_new_transactions_or_outputs_with_proof(
+                utils::verify_new_transactions_or_outputs_with_proof(
                     &mut mock_client,
                     response_receiver_2,
                     Some(transaction_list_with_proof),
@@ -257,7 +251,7 @@ async fn test_get_new_transactions_or_outputs_different_network() {
                 )
                 .await;
             } else {
-                verify_new_transactions_or_outputs_with_proof(
+                utils::verify_new_transactions_or_outputs_with_proof(
                     &mut mock_client,
                     response_receiver_1,
                     None,
@@ -265,7 +259,7 @@ async fn test_get_new_transactions_or_outputs_different_network() {
                     highest_ledger_info.clone(),
                 )
                 .await;
-                verify_new_transactions_or_outputs_with_proof(
+                utils::verify_new_transactions_or_outputs_with_proof(
                     &mut mock_client,
                     response_receiver_2,
                     None,
@@ -366,7 +360,7 @@ async fn test_get_new_transactions_or_outputs_epoch_change() {
 
         // Verify a response is received and that it contains the correct data
         if fallback_to_transactions {
-            verify_new_transactions_or_outputs_with_proof(
+            utils::verify_new_transactions_or_outputs_with_proof(
                 &mut mock_client,
                 response_receiver,
                 Some(transaction_list_with_proof),
@@ -375,7 +369,7 @@ async fn test_get_new_transactions_or_outputs_epoch_change() {
             )
             .await;
         } else {
-            verify_new_transactions_or_outputs_with_proof(
+            utils::verify_new_transactions_or_outputs_with_proof(
                 &mut mock_client,
                 response_receiver,
                 None,
@@ -465,7 +459,7 @@ async fn test_get_new_transactions_or_outputs_max_chunk() {
 
         // Verify a response is received and that it contains the correct data
         if fallback_to_transactions {
-            verify_new_transactions_or_outputs_with_proof(
+            utils::verify_new_transactions_or_outputs_with_proof(
                 &mut mock_client,
                 response_receiver,
                 Some(transaction_list_with_proof),
@@ -474,7 +468,7 @@ async fn test_get_new_transactions_or_outputs_max_chunk() {
             )
             .await;
         } else {
-            verify_new_transactions_or_outputs_with_proof(
+            utils::verify_new_transactions_or_outputs_with_proof(
                 &mut mock_client,
                 response_receiver,
                 None,
@@ -530,40 +524,4 @@ async fn get_new_transactions_or_outputs_with_proof_for_peer(
     mock_client
         .send_request(storage_request, peer_id, network_id)
         .await
-}
-
-/// Verifies that a new transactions or outputs with proof response is received
-/// and that the response contains the correct data.
-async fn verify_new_transactions_or_outputs_with_proof(
-    mock_client: &mut MockClient,
-    receiver: Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>>,
-    expected_transaction_list_with_proof: Option<TransactionListWithProof>,
-    expected_output_list_with_proof: Option<TransactionOutputListWithProof>,
-    expected_ledger_info: LedgerInfoWithSignatures,
-) {
-    let response = mock_client.wait_for_response(receiver).await.unwrap();
-    match response.get_data_response().unwrap() {
-        DataResponse::NewTransactionsOrOutputsWithProof((
-            transactions_or_outputs_with_proof,
-            ledger_info,
-        )) => {
-            let (transactions_with_proof, outputs_with_proof) = transactions_or_outputs_with_proof;
-            if let Some(transactions_with_proof) = transactions_with_proof {
-                assert_eq!(
-                    transactions_with_proof,
-                    expected_transaction_list_with_proof.unwrap()
-                );
-            } else {
-                assert_eq!(
-                    outputs_with_proof.unwrap(),
-                    expected_output_list_with_proof.unwrap()
-                );
-            }
-            assert_eq!(ledger_info, expected_ledger_info);
-        },
-        response => panic!(
-            "Expected new transaction outputs with proof but got: {:?}",
-            response
-        ),
-    };
 }

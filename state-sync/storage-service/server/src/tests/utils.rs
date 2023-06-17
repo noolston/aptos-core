@@ -4,6 +4,7 @@
 use crate::{
     optimistic_fetch::OptimisticFetchRequest,
     storage::StorageReader,
+    subscription::SubscriptionStreamRequests,
     tests::mock::{MockClient, MockDatabaseReader},
     StorageServiceServer,
 };
@@ -13,15 +14,19 @@ use aptos_config::{
 };
 use aptos_crypto::{ed25519::Ed25519PrivateKey, HashValue, PrivateKey, SigningKey, Uniform};
 use aptos_infallible::Mutex;
+use aptos_logger::Level;
+use aptos_network::protocols::network::RpcError;
 use aptos_storage_service_types::{
     requests::{
         DataRequest, StateValuesWithProofRequest, StorageServiceRequest,
+        SubscribeTransactionOutputsWithProofRequest,
+        SubscribeTransactionsOrOutputsWithProofRequest, SubscribeTransactionsWithProofRequest,
         TransactionsWithProofRequest,
     },
     responses::{CompleteDataRange, DataResponse, StorageServerSummary, StorageServiceResponse},
     Epoch, StorageServiceError,
 };
-use aptos_time_service::MockTimeService;
+use aptos_time_service::{MockTimeService, TimeService};
 use aptos_types::{
     account_address::AccountAddress,
     aggregate_signature::AggregateSignature,
@@ -39,8 +44,11 @@ use aptos_types::{
     validator_verifier::ValidatorVerifier,
     write_set::WriteSet,
 };
+use bytes::Bytes;
+use claims::assert_none;
+use futures::channel::oneshot::Receiver;
 use mockall::predicate::eq;
-use rand::Rng;
+use rand::{rngs::OsRng, seq::SliceRandom, Rng};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// Advances the given timer by the amount of time it takes to refresh storage
@@ -119,6 +127,14 @@ pub fn create_output_list_with_proof(
         Some(start_version),
         transaction_list_with_proof.proof,
     )
+}
+
+/// Creates a vector from first_index to last_index (exclusive)
+/// and shuffles the entries randomly.
+pub fn create_shuffled_vector(first_index: u64, last_index: u64) -> Vec<u64> {
+    let mut vector: Vec<u64> = (first_index..last_index).collect();
+    vector.shuffle(&mut rand::thread_rng()); // Shuffle the vec using the thread rng
+    vector
 }
 
 /// Creates a test ledger info with signatures
@@ -253,6 +269,15 @@ pub fn configure_network_chunk_limit(
     }
 }
 
+/// Advances the mock time service by the specified number of milliseconds
+pub async fn elapse_time(time_ms: u64, time_service: &TimeService) {
+    time_service
+        .clone()
+        .into_mock()
+        .advance_async(Duration::from_millis(time_ms))
+        .await;
+}
+
 /// Sets an expectation on the given mock db for a call to fetch an epoch change proof
 pub fn expect_get_epoch_ending_ledger_infos(
     mock_db: &mut MockDatabaseReader,
@@ -327,6 +352,11 @@ pub async fn get_number_of_states(
     send_storage_request(mock_client, use_compression, data_request).await
 }
 
+/// Generates and returns a random number (u8)
+pub fn get_random_number() -> u8 {
+    OsRng.gen()
+}
+
 /// Sends a state values with proof request and processes the response
 pub async fn get_state_values_with_proof(
     mock_client: &mut MockClient,
@@ -361,6 +391,14 @@ pub async fn get_transactions_with_proof(
     send_storage_request(mock_client, use_compression, data_request).await
 }
 
+/// Initializes the Aptos logger for tests
+pub fn initialize_logger() {
+    aptos_logger::Logger::builder()
+        .is_async(false)
+        .level(Level::Debug)
+        .build();
+}
+
 /// Sends the given storage request to the given client
 pub async fn send_storage_request(
     mock_client: &mut MockClient,
@@ -369,6 +407,155 @@ pub async fn send_storage_request(
 ) -> Result<StorageServiceResponse, StorageServiceError> {
     let storage_request = StorageServiceRequest::new(data_request, use_compression);
     mock_client.process_request(storage_request).await
+}
+
+/// Creates and sends a request to subscribe to new transactions or outputs
+pub async fn subscribe_to_transactions_or_outputs(
+    mock_client: &mut MockClient,
+    known_version: u64,
+    known_epoch: u64,
+    include_events: bool,
+    max_num_output_reductions: u64,
+    stream_id: u64,
+    stream_index: u64,
+) -> Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>> {
+    subscribe_to_transactions_or_outputs_for_peer(
+        mock_client,
+        known_version,
+        known_epoch,
+        include_events,
+        max_num_output_reductions,
+        stream_id,
+        stream_index,
+        None,
+    )
+    .await
+}
+
+/// Creates and sends a request to subscribe to new transactions or outputs for the specified peer
+pub async fn subscribe_to_transactions_or_outputs_for_peer(
+    mock_client: &mut MockClient,
+    known_version: u64,
+    known_epoch: u64,
+    include_events: bool,
+    max_num_output_reductions: u64,
+    subscription_stream_id: u64,
+    subscription_stream_index: u64,
+    peer_network_id: Option<PeerNetworkId>,
+) -> Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>> {
+    // Create the data request
+    let data_request = DataRequest::SubscribeTransactionsOrOutputsWithProof(
+        SubscribeTransactionsOrOutputsWithProofRequest {
+            known_version,
+            known_epoch,
+            include_events,
+            max_num_output_reductions,
+            subscription_stream_id,
+            subscription_stream_index,
+        },
+    );
+    let storage_request = StorageServiceRequest::new(data_request, true);
+
+    // Send the request
+    let (peer_id, network_id) = extract_peer_and_network_id(peer_network_id);
+    mock_client
+        .send_request(storage_request, peer_id, network_id)
+        .await
+}
+
+/// Creates and sends a request to subscribe to new transaction outputs
+pub async fn subscribe_to_transaction_outputs(
+    mock_client: &mut MockClient,
+    known_version: u64,
+    known_epoch: u64,
+    stream_id: u64,
+    stream_index: u64,
+) -> Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>> {
+    subscribe_to_transaction_outputs_for_peer(
+        mock_client,
+        known_version,
+        known_epoch,
+        stream_id,
+        stream_index,
+        None,
+    )
+    .await
+}
+
+/// Creates and sends a request to subscribe to new transaction outputs for the specified peer
+pub async fn subscribe_to_transaction_outputs_for_peer(
+    mock_client: &mut MockClient,
+    known_version: u64,
+    known_epoch: u64,
+    subscription_stream_id: u64,
+    subscription_stream_index: u64,
+    peer_network_id: Option<PeerNetworkId>,
+) -> Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>> {
+    // Create the data request
+    let data_request = DataRequest::SubscribeTransactionOutputsWithProof(
+        SubscribeTransactionOutputsWithProofRequest {
+            known_version,
+            known_epoch,
+            subscription_stream_id,
+            subscription_stream_index,
+        },
+    );
+    let storage_request = StorageServiceRequest::new(data_request, true);
+
+    // Send the request
+    let (peer_id, network_id) = extract_peer_and_network_id(peer_network_id);
+    mock_client
+        .send_request(storage_request, peer_id, network_id)
+        .await
+}
+
+/// Creates and sends a request to subscribe to new transactions
+pub async fn subscribe_to_transactions(
+    mock_client: &mut MockClient,
+    known_version: u64,
+    known_epoch: u64,
+    include_events: bool,
+    stream_id: u64,
+    stream_index: u64,
+) -> Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>> {
+    subscribe_to_transactions_for_peer(
+        mock_client,
+        known_version,
+        known_epoch,
+        include_events,
+        stream_id,
+        stream_index,
+        None,
+    )
+    .await
+}
+
+/// Creates and sends a request to subscribe to new transactions for the specified peer
+pub async fn subscribe_to_transactions_for_peer(
+    mock_client: &mut MockClient,
+    known_version: u64,
+    known_epoch: u64,
+    include_events: bool,
+    subscription_stream_id: u64,
+    subscription_stream_index: u64,
+    peer_network_id: Option<PeerNetworkId>,
+) -> Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>> {
+    // Create the data request
+    let data_request =
+        DataRequest::SubscribeTransactionsWithProof(SubscribeTransactionsWithProofRequest {
+            known_version,
+            known_epoch,
+            include_events,
+            subscription_stream_id,
+            subscription_stream_index,
+        });
+    let storage_request = StorageServiceRequest::new(data_request, true);
+
+    // Send the request
+    let (peer_id, network_id) = extract_peer_and_network_id(peer_network_id);
+    mock_client
+        .send_request(storage_request, peer_id, network_id)
+        .await
 }
 
 /// Updates the storage server summary with the specified data
@@ -399,6 +586,152 @@ pub fn update_storage_server_summary(
 
     // Update the storage server summary
     *storage_server.cached_storage_server_summary.write() = storage_server_summary;
+}
+
+/// Verifies that the peer has an active subscription stream
+/// and that the stream has the appropriate ID.
+pub fn verify_active_stream_id_for_peer(
+    active_subscriptions: Arc<Mutex<HashMap<PeerNetworkId, SubscriptionStreamRequests>>>,
+    peer_network_id: PeerNetworkId,
+    new_stream_id: u64,
+) {
+    // Get the subscription stream requests for the peer
+    let mut active_subscriptions = active_subscriptions.lock();
+    let subscription_stream_requests = active_subscriptions.get_mut(&peer_network_id).unwrap();
+
+    // Verify the stream ID is correct
+    assert_eq!(
+        subscription_stream_requests.subscription_stream_id(),
+        new_stream_id
+    );
+}
+
+/// Verifies that a new transaction outputs with proof response is received
+/// and that the response contains the correct data.
+pub async fn verify_new_transaction_outputs_with_proof(
+    mock_client: &mut MockClient,
+    receiver: Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>>,
+    output_list_with_proof: TransactionOutputListWithProof,
+    expected_ledger_info: LedgerInfoWithSignatures,
+) {
+    match mock_client
+        .wait_for_response(receiver)
+        .await
+        .unwrap()
+        .get_data_response()
+        .unwrap()
+    {
+        DataResponse::NewTransactionOutputsWithProof((outputs_with_proof, ledger_info)) => {
+            assert_eq!(outputs_with_proof, output_list_with_proof);
+            assert_eq!(ledger_info, expected_ledger_info);
+        },
+        response => panic!(
+            "Expected new transaction outputs with proof but got: {:?}",
+            response
+        ),
+    };
+}
+
+/// Verifies that a new transactions with proof response is received
+/// and that the response contains the correct data.
+pub async fn verify_new_transactions_with_proof(
+    mock_client: &mut MockClient,
+    receiver: Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>>,
+    expected_transactions_with_proof: TransactionListWithProof,
+    expected_ledger_info: LedgerInfoWithSignatures,
+) {
+    match mock_client
+        .wait_for_response(receiver)
+        .await
+        .unwrap()
+        .get_data_response()
+        .unwrap()
+    {
+        DataResponse::NewTransactionsWithProof((transactions_with_proof, ledger_info)) => {
+            assert_eq!(transactions_with_proof, expected_transactions_with_proof);
+            assert_eq!(ledger_info, expected_ledger_info);
+        },
+        response => panic!(
+            "Expected new transaction with proof but got: {:?}",
+            response
+        ),
+    };
+}
+
+/// Verifies that a new transactions or outputs with proof response is received
+/// and that the response contains the correct data.
+pub async fn verify_new_transactions_or_outputs_with_proof(
+    mock_client: &mut MockClient,
+    receiver: Receiver<Result<bytes::Bytes, aptos_network::protocols::network::RpcError>>,
+    expected_transaction_list_with_proof: Option<TransactionListWithProof>,
+    expected_output_list_with_proof: Option<TransactionOutputListWithProof>,
+    expected_ledger_info: LedgerInfoWithSignatures,
+) {
+    let response = mock_client.wait_for_response(receiver).await.unwrap();
+    match response.get_data_response().unwrap() {
+        DataResponse::NewTransactionsOrOutputsWithProof((
+            transactions_or_outputs_with_proof,
+            ledger_info,
+        )) => {
+            let (transactions_with_proof, outputs_with_proof) = transactions_or_outputs_with_proof;
+            if let Some(transactions_with_proof) = transactions_with_proof {
+                assert_eq!(
+                    transactions_with_proof,
+                    expected_transaction_list_with_proof.unwrap()
+                );
+            } else {
+                assert_eq!(
+                    outputs_with_proof.unwrap(),
+                    expected_output_list_with_proof.unwrap()
+                );
+            }
+            assert_eq!(ledger_info, expected_ledger_info);
+        },
+        response => panic!(
+            "Expected new transaction outputs with proof but got: {:?}",
+            response
+        ),
+    };
+}
+
+/// Verifies that no subscription responses have been received yet
+pub fn verify_no_subscription_responses(
+    response_receivers: &mut HashMap<u64, Receiver<Result<Bytes, RpcError>>>,
+) {
+    for response_receiver in response_receivers.values_mut() {
+        assert_none!(response_receiver.try_recv().unwrap());
+    }
+}
+
+/// Verifies the state of the active subscription stream
+pub fn verify_subscription_stream_state(
+    active_subscriptions: Arc<Mutex<HashMap<PeerNetworkId, SubscriptionStreamRequests>>>,
+    peer_network_id: PeerNetworkId,
+    num_stream_requests: u64,
+    peer_version: u64,
+    highest_epoch: u64,
+    max_transaction_output_chunk_size: u64,
+) {
+    // Get the next index to serve on the stream
+    let mut active_subscriptions = active_subscriptions.lock();
+    let subscription_stream_requests = active_subscriptions.get_mut(&peer_network_id).unwrap();
+    let next_index_to_serve = subscription_stream_requests.get_next_index_to_serve();
+
+    // Verify the highest known version and epoch
+    let expected_version = peer_version + (max_transaction_output_chunk_size * next_index_to_serve);
+    assert_eq!(
+        subscription_stream_requests.get_highest_known_version_and_epoch(),
+        (expected_version, highest_epoch)
+    );
+
+    // Verify the number of active requests
+    let num_active_stream_requests = subscription_stream_requests
+        .get_pending_subscription_requests()
+        .len();
+    assert_eq!(
+        num_active_stream_requests as u64,
+        num_stream_requests - next_index_to_serve
+    );
 }
 
 /// Waits until the storage summary has refreshed for the first time
@@ -433,6 +766,18 @@ pub async fn wait_for_optimistic_fetch_service_to_refresh(
     advance_storage_refresh_time(mock_time).await;
 }
 
+/// Advances enough time that the subscription service is able to refresh
+pub async fn wait_for_subscription_service_to_refresh(
+    mock_client: &mut MockClient,
+    mock_time: &MockTimeService,
+) {
+    // Elapse enough time to force storage to be updated
+    wait_for_storage_to_refresh(mock_client, mock_time).await;
+
+    // Elapse enough time to force the subscription thread to work
+    advance_storage_refresh_time(mock_time).await;
+}
+
 /// Waits for the specified number of optimistic fetches to be active
 pub async fn wait_for_active_optimistic_fetches(
     active_optimistic_fetches: Arc<Mutex<HashMap<PeerNetworkId, OptimisticFetchRequest>>>,
@@ -442,6 +787,47 @@ pub async fn wait_for_active_optimistic_fetches(
         let num_active_fetches = active_optimistic_fetches.lock().len();
         if num_active_fetches == expected_num_active_fetches {
             return; // We found the expected number of active fetches
+        }
+
+        // Sleep for a while
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Waits for the specified number of active stream requests for
+/// the given peer ID.
+pub async fn wait_for_active_stream_requests(
+    active_subscriptions: Arc<Mutex<HashMap<PeerNetworkId, SubscriptionStreamRequests>>>,
+    peer_network_id: PeerNetworkId,
+    expected_num_active_stream_requests: usize,
+) {
+    loop {
+        // Check the number of active stream requests
+        if let Some(subscription_stream_requests) =
+            active_subscriptions.lock().get_mut(&peer_network_id)
+        {
+            let num_active_stream_requests = subscription_stream_requests
+                .get_pending_subscription_requests()
+                .len();
+            if num_active_stream_requests == expected_num_active_stream_requests {
+                return; // We found the expected number of stream requests
+            }
+        }
+
+        // Sleep for a while
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Waits for the specified number of subscriptions to be active
+pub async fn wait_for_active_subscriptions(
+    active_subscriptions: Arc<Mutex<HashMap<PeerNetworkId, SubscriptionStreamRequests>>>,
+    expected_num_active_subscriptions: usize,
+) {
+    loop {
+        let num_active_subscriptions = active_subscriptions.lock().len();
+        if num_active_subscriptions == expected_num_active_subscriptions {
+            return; // We found the expected number of active subscriptions
         }
 
         // Sleep for a while

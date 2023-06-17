@@ -16,6 +16,7 @@ pub const OPTIMISTIC_FETCH_ADD: &str = "optimistic_fetch_add";
 pub const OPTIMISTIC_FETCH_EXPIRE: &str = "optimistic_fetch_expire";
 pub const SUBSCRIPTION_ADD: &str = "subscription_add";
 pub const SUBSCRIPTION_EXPIRE: &str = "subscription_expire";
+pub const SUBSCRIPTION_FAILURE: &str = "subscription_failure";
 
 /// Gauge for tracking the number of actively ignored peers
 pub static IGNORED_PEER_COUNT: Lazy<IntGaugeVec> = Lazy::new(|| {

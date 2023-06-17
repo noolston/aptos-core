@@ -27,9 +27,13 @@ use lru::LruCache;
 use std::{
     cmp::min,
     collections::{BTreeMap, HashMap},
+    fmt::Debug,
     sync::Arc,
     time::Instant,
 };
+
+// TODO: make this configurable?
+pub const MAX_NUM_ACTIVE_SUBSCRIPTIONS: usize = 50; // The maximum number of pending subscriptions (per peer)
 
 /// A single subscription request that is part of a stream
 pub struct SubscriptionRequest {
@@ -49,6 +53,11 @@ impl SubscriptionRequest {
             response_sender,
             request_start_time: time_service.now(),
         }
+    }
+
+    /// Returns the response sender and consumes the request
+    pub fn get_response_sender(self) -> ResponseSender {
+        self.response_sender
     }
 
     /// Creates a new storage service request to satisfy the request
@@ -158,6 +167,20 @@ impl SubscriptionRequest {
     pub fn subscription_stream_id(&self) -> u64 {
         match &self.request.data_request {
             DataRequest::SubscribeTransactionOutputsWithProof(request) => {
+                request.subscription_stream_id
+            },
+            DataRequest::SubscribeTransactionsWithProof(request) => request.subscription_stream_id,
+            DataRequest::SubscribeTransactionsOrOutputsWithProof(request) => {
+                request.subscription_stream_id
+            },
+            request => unreachable!("Unexpected subscription request: {:?}", request),
+        }
+    }
+
+    /// Returns the subscription stream index for the request
+    fn subscription_stream_index(&self) -> u64 {
+        match &self.request.data_request {
+            DataRequest::SubscribeTransactionOutputsWithProof(request) => {
                 request.subscription_stream_index
             },
             DataRequest::SubscribeTransactionsWithProof(request) => {
@@ -169,19 +192,15 @@ impl SubscriptionRequest {
             request => unreachable!("Unexpected subscription request: {:?}", request),
         }
     }
+}
 
-    /// Returns the subscription stream index for the request
-    fn subscription_stream_index(&self) -> u64 {
-        match &self.request.data_request {
-            DataRequest::SubscribeTransactionOutputsWithProof(request) => {
-                request.subscription_stream_id
-            },
-            DataRequest::SubscribeTransactionsWithProof(request) => request.subscription_stream_id,
-            DataRequest::SubscribeTransactionsOrOutputsWithProof(request) => {
-                request.subscription_stream_id
-            },
-            request => unreachable!("Unexpected subscription request: {:?}", request),
-        }
+impl Debug for SubscriptionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SubscriptionRequest: {{ request_start_time: {:?}, request: {:?} }}",
+            self.request_start_time, self.request
+        )
     }
 }
 
@@ -223,21 +242,46 @@ impl SubscriptionStreamRequests {
         }
     }
 
-    /// Adds a subscription request to the existing stream.
-    ///
-    /// Note: This function assumes the caller has already verified that
-    /// the stream ID's match for the request.
+    /// Adds a subscription request to the existing stream. If this operation
+    /// fails, the request is returned to the caller so that the client
+    /// can be notified of the error.
     pub fn add_subscription_request(
         &mut self,
         subscription_request: SubscriptionRequest,
-    ) -> Result<(), Error> {
+    ) -> Result<(), (Error, SubscriptionRequest)> {
+        // Verify that the subscription request stream ID is valid
+        let subscription_stream_id = subscription_request.subscription_stream_id();
+        if subscription_stream_id != self.subscription_stream_id {
+            return Err((
+                Error::InvalidRequest(format!(
+                    "The subscription request stream ID is invalid! Expected: {:?}, found: {:?}",
+                    self.subscription_stream_id, subscription_stream_id
+                )),
+                subscription_request,
+            ));
+        }
+
         // Verify that the subscription request index is valid
         let subscription_request_index = subscription_request.subscription_stream_index();
         if subscription_request_index < self.next_index_to_serve {
-            return Err(Error::InvalidRequest(format!(
-                "The subscription request index is too low! Next index to serve: {:?}, found: {:?}",
-                self.next_index_to_serve, subscription_request_index
-            )));
+            return Err((
+                Error::InvalidRequest(format!(
+                    "The subscription request index is too low! Next index to serve: {:?}, found: {:?}",
+                    self.next_index_to_serve, subscription_request_index
+                )),
+                subscription_request,
+            ));
+        }
+
+        // Verify that the number of active subscriptions respects the maximum
+        if self.pending_subscription_requests.len() >= MAX_NUM_ACTIVE_SUBSCRIPTIONS {
+            return Err((
+                Error::InvalidRequest(format!(
+                    "The maximum number of active subscriptions has been reached! Max: {:?}, found: {:?}",
+                    MAX_NUM_ACTIVE_SUBSCRIPTIONS, self.pending_subscription_requests.len()
+                )),
+                subscription_request,
+            ));
         }
 
         // Insert the subscription request into the pending requests
@@ -249,12 +293,15 @@ impl SubscriptionStreamRequests {
         // Refresh the last stream update time
         self.refresh_last_stream_update_time();
 
-        // If a pending request already existed, return an error
-        if existing_request.is_some() {
-            return Err(Error::InvalidRequest(format!(
-                "An existing subscription request was found for the given index: {:?}",
-                subscription_request_index
-            )));
+        // If a pending request already existed, return the previous request to the caller
+        if let Some(existing_request) = existing_request {
+            return Err((
+                Error::InvalidRequest(format!(
+                    "Overwriting an existing subscription request for the given index: {:?}",
+                    subscription_request_index
+                )),
+                existing_request,
+            ));
         }
 
         Ok(())
@@ -262,7 +309,7 @@ impl SubscriptionStreamRequests {
 
     /// Returns a reference to the first pending subscription request
     /// in the stream (if it exists).
-    fn first_pending_request(&self) -> Option<&SubscriptionRequest> {
+    pub fn first_pending_request(&self) -> Option<&SubscriptionRequest> {
         self.pending_subscription_requests
             .first_key_value()
             .map(|(_, request)| request)
@@ -273,27 +320,20 @@ impl SubscriptionStreamRequests {
     /// pending request has been blocked for too long; or (ii)
     /// the stream has been idle for too long.
     fn is_expired(&self, timeout_ms: u64) -> bool {
-        if let Some(subscription_request) = self.first_pending_request() {
-            // Verify the stream hasn't been blocked for too long
-            let current_time = self.time_service.now();
-            let elapsed_time = current_time
-                .duration_since(subscription_request.request_start_time)
-                .as_millis();
-            if elapsed_time > timeout_ms as u128 {
-                return true; // The stream has been blocked for too long
-            }
-        } else {
-            // If the steam is empty, verify the stream hasn't been idle for too long
-            let current_time = self.time_service.now();
-            let elapsed_time = current_time
-                .duration_since(self.last_stream_update_time)
-                .as_millis();
-            if elapsed_time > timeout_ms as u128 {
-                return true; // The stream has been idle for too long
-            }
-        }
+        // Determine the time when the stream was first blocked
+        let time_when_first_blocked =
+            if let Some(subscription_request) = self.first_pending_request() {
+                subscription_request.request_start_time // The stream is blocked on the first pending request
+            } else {
+                self.last_stream_update_time // The stream is idle and hasn't been updated in a while
+            };
 
-        false
+        // Verify the stream hasn't been blocked for too long
+        let current_time = self.time_service.now();
+        let elapsed_time = current_time
+            .duration_since(time_when_first_blocked)
+            .as_millis();
+        elapsed_time > (timeout_ms as u128)
     }
 
     /// Removes the first pending subscription request from the stream
@@ -361,15 +401,38 @@ impl SubscriptionStreamRequests {
         // Update the highest known version
         self.highest_known_version += num_data_items as u64;
 
-        // Update the highest known epoch (iff an epoch change occurred)
-        if target_ledger_info.ledger_info().ends_epoch() {
+        // Update the highest known epoch if we've now hit an epoch ending ledger info
+        if self.highest_known_version == target_ledger_info.ledger_info().version()
+            && target_ledger_info.ledger_info().ends_epoch()
+        {
             self.highest_known_epoch += 1;
         }
+
+        // Update the next index to serve
+        self.next_index_to_serve += 1;
 
         // Refresh the last stream update time
         self.refresh_last_stream_update_time();
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    /// Returns the highest known version and epoch for test purposes
+    pub fn get_highest_known_version_and_epoch(&self) -> (u64, u64) {
+        (self.highest_known_version, self.highest_known_epoch)
+    }
+
+    #[cfg(test)]
+    /// Returns the next index to serve for test purposes
+    pub fn get_next_index_to_serve(&self) -> u64 {
+        self.next_index_to_serve
+    }
+
+    #[cfg(test)]
+    /// Returns the pending subscription requests for test purposes
+    pub fn get_pending_subscription_requests(&mut self) -> &mut BTreeMap<u64, SubscriptionRequest> {
+        &mut self.pending_subscription_requests
     }
 }
 
@@ -516,7 +579,7 @@ pub(crate) fn get_peers_with_ready_subscriptions<T: StorageReaderInterface>(
                             time_service.clone(),
                         )?;
 
-                        // Check that we haven't been sent an subscription request
+                        // Check that we haven't been sent an invalid subscription request
                         // (i.e., a request that does not respect an epoch boundary).
                         if epoch_ending_ledger_info.ledger_info().version() <= highest_known_version
                         {
@@ -562,7 +625,7 @@ pub(crate) fn remove_expired_subscription_streams(
         .lock()
         .retain(|peer_network_id, subscription_stream_requests| {
             // Update the expired subscription stream metrics
-            if subscription_stream_requests.is_expired(config.max_subscription_period) {
+            if subscription_stream_requests.is_expired(config.max_subscription_period_ms) {
                 increment_counter(
                     &metrics::SUBSCRIPTION_EVENTS,
                     peer_network_id.network_id(),
@@ -571,6 +634,6 @@ pub(crate) fn remove_expired_subscription_streams(
             }
 
             // Only retain non-expired subscription streams
-            !subscription_stream_requests.is_expired(config.max_subscription_period)
+            !subscription_stream_requests.is_expired(config.max_subscription_period_ms)
         });
 }
