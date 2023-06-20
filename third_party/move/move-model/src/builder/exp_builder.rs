@@ -1761,15 +1761,31 @@ impl<'env, 'translator, 'module_translator> ExpTranslator<'env, 'translator, 'mo
                     expected_type,
                     "in expression",
                 );
-                // calls to built-in functions might have additional requirements on the types
                 match cand.oper {
-                    Operation::Exists(_) | Operation::Global(_) => {
+                    // calls to built-in functions might have additional requirements on the types
+                    Operation::Exists(_) => {
+                        let ty_inst = &instantiation[0];
+                        if !(matches!(ty_inst, Type::Struct(..))
+                            || matches!(ty_inst, Type::TypeParameter(..)))
+                        {
+                            self.error(
+                                loc,
+                                &format!(
+                                    "The type argument to `exists` must be a struct \
+                                    or TypeParameter type but {} is not either of them.",
+                                    ty_inst.display(&self.type_display_context())
+                                ),
+                            );
+                            return self.new_error_exp();
+                        }
+                    },
+                    Operation::Global(_) => {
                         let ty_inst = &instantiation[0];
                         if !matches!(ty_inst, Type::Struct(..)) {
                             self.error(
                                 loc,
                                 &format!(
-                                    "The type argument to `exists` and `global` must be a struct \
+                                    "The type argument to `global` must be a struct \
                                     type but {} is not a struct type.",
                                     ty_inst.display(&self.type_display_context())
                                 ),
