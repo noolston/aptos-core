@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::anyhow;
-use aptos_config::{config::NodeConfig, utils::get_genesis_txn};
-use aptos_db::AptosDB;
+use aptos_config::{
+    config::{BootstrappingMode, NodeConfig},
+    utils::get_genesis_txn,
+};
+use aptos_db::{fast_sync_aptos_db::FastSyncAptosDB, AptosDB};
 use aptos_executor::db_bootstrapper::maybe_bootstrap;
 use aptos_logger::{debug, info};
 use aptos_storage_interface::{DbReader, DbReaderWriter};
@@ -106,15 +109,29 @@ pub fn initialize_database_and_checkpoints(
         node_config.storage.max_num_nodes_per_lru_cache_shard,
     )
     .map_err(|err| anyhow!("DB failed to open {}", err))?;
-    let (aptos_db, db_rw, backup_service) =
+    let (aptos_db, mut db_rw, backup_service) =
         bootstrap_db(aptos_db, node_config.storage.backup_service_address);
 
-    // TODO: handle non-genesis waypoints for state sync!
+    // TODO(bowu): fully decouple genesis from fast sync
     // If there's a genesis txn and waypoint, commit it if the result matches.
     let genesis_waypoint = node_config.base.waypoint.genesis_waypoint();
     if let Some(genesis) = get_genesis_txn(node_config) {
-        maybe_bootstrap::<AptosVM>(&db_rw, genesis, genesis_waypoint)
-            .map_err(|err| anyhow!("DB failed to bootstrap {}", err))?;
+        if node_config.state_sync.state_sync_driver.bootstrapping_mode
+            == BootstrappingMode::DownloadLatestStates
+        {
+            let mut fast_sync_db =
+                FastSyncAptosDB::new_fast_sync_aptos_db(db_rw.reader.clone(), node_config)?;
+            let fast_sync_db_rw = fast_sync_db
+                .get_db_reader_writer()
+                .expect("unable to get db_rw for fast sync genesis");
+            maybe_bootstrap::<AptosVM>(fast_sync_db_rw, genesis, genesis_waypoint)
+                .map_err(|err| anyhow!("DB failed to bootstrap {}", err))?;
+            // replace the db_rw's reader with the one from the fast sync db
+            db_rw.set_reader(Arc::new(fast_sync_db));
+        } else {
+            maybe_bootstrap::<AptosVM>(&db_rw, genesis, genesis_waypoint)
+                .map_err(|err| anyhow!("DB failed to bootstrap {}", err))?;
+        }
     } else {
         info!("Genesis txn not provided! This is fine only if you don't expect to apply it. Otherwise, the config is incorrect!");
     }

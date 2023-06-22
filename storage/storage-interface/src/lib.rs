@@ -663,6 +663,10 @@ impl DbReaderWriter {
         let arc_db = Arc::new(db);
         (Arc::clone(&arc_db), Self::from_arc(arc_db))
     }
+
+    pub fn set_reader(&mut self, reader: Arc<dyn DbReader>) {
+        self.reader = reader;
+    }
 }
 
 /// Network types for storage service
