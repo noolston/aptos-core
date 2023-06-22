@@ -21,7 +21,13 @@ pub enum TransactionTypeArg {
     AccountResource32B,
     AccountResource1KB,
     AccountResource10KB,
+    AccountResource100KB,
+    AccountResource512KB,
+    AccountResource1MB,
     ModifyGlobalResource,
+    EmitEvents1K,
+    EmitEvents10K,
+    EmitEvents100K,
     Batch100Transfer,
     TokenV1NFTMintAndStoreSequential,
     TokenV1NFTMintAndTransferSequential,
@@ -91,8 +97,44 @@ impl TransactionTypeArg {
                 num_modules: module_working_set_size,
                 use_account_pool: sender_use_account_pool,
             },
+            TransactionTypeArg::AccountResource100KB => TransactionType::CallCustomModules {
+                entry_point: EntryPoints::BytesMakeOrChange {
+                    data_length: Some(100 * 1024),
+                },
+                num_modules: module_working_set_size,
+                use_account_pool: sender_use_account_pool,
+            },
+            TransactionTypeArg::AccountResource512KB => TransactionType::CallCustomModules {
+                entry_point: EntryPoints::BytesMakeOrChange {
+                    data_length: Some(512 * 1024),
+                },
+                num_modules: module_working_set_size,
+                use_account_pool: sender_use_account_pool,
+            },
+            TransactionTypeArg::AccountResource1MB => TransactionType::CallCustomModules {
+                entry_point: EntryPoints::BytesMakeOrChange {
+                    data_length: Some(1024 * 1024),
+                },
+                num_modules: module_working_set_size,
+                use_account_pool: sender_use_account_pool,
+            },
             TransactionTypeArg::ModifyGlobalResource => TransactionType::CallCustomModules {
                 entry_point: EntryPoints::StepDst,
+                num_modules: module_working_set_size,
+                use_account_pool: sender_use_account_pool,
+            },
+            TransactionTypeArg::EmitEvents1K => TransactionType::CallCustomModules {
+                entry_point: EntryPoints::EmitEvents { count: 1000 },
+                num_modules: module_working_set_size,
+                use_account_pool: sender_use_account_pool,
+            },
+            TransactionTypeArg::EmitEvents10K => TransactionType::CallCustomModules {
+                entry_point: EntryPoints::EmitEvents { count: 10_000 },
+                num_modules: module_working_set_size,
+                use_account_pool: sender_use_account_pool,
+            },
+            TransactionTypeArg::EmitEvents100K => TransactionType::CallCustomModules {
+                entry_point: EntryPoints::EmitEvents { count: 100_000 },
                 num_modules: module_working_set_size,
                 use_account_pool: sender_use_account_pool,
             },

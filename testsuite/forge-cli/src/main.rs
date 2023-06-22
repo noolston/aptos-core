@@ -541,6 +541,7 @@ fn single_test_suite(test_name: &str, duration: Duration) -> Result<ForgeConfig>
         "multiregion_benchmark_test" => multiregion_benchmark_test(),
         "pfn_const_tps" => pfn_const_tps(duration),
         "pfn_performance" => pfn_performance(duration),
+        "pfn_suboptimal_workload" => pfn_suboptimal_workload(duration),
         _ => return Err(format_err!("Invalid --suite given: {:?}", test_name)),
     };
     Ok(single_test_suite)
@@ -1892,6 +1893,101 @@ fn pfn_performance(duration: Duration) -> ForgeConfig {
                 .add_wait_for_catchup_s(
                     // Give at least 60s for catchup and at most 10% of the run
                     (duration.as_secs() / 10).max(60),
+                )
+                .add_chain_progress(StateProgressThreshold {
+                    max_no_progress_secs: 10.0,
+                    max_round_gap: 4,
+                }),
+        )
+}
+
+fn pfn_realistic_env_load_sweep_test() -> ForgeConfig {
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(20).unwrap())
+        .with_initial_fullnode_count(10)
+        .add_network_test(wrap_with_realistic_env(LoadVsPerfBenchmark {
+            test: Box::new(PFNPerformance),
+            workloads: Workloads::TPS(&[10, 100, 1000, 3000, 5000]),
+            criteria: [
+                (9, 1.5, 3.),
+                (95, 1.5, 3.),
+                (950, 2., 3.),
+                (2750, 2.5, 4.),
+                (4600, 3., 5.),
+            ]
+                .into_iter()
+                .map(|(min_tps, max_lat_p50, max_lat_p99)| {
+                    SuccessCriteria::new(min_tps)
+                        .add_max_expired_tps(0)
+                        .add_max_failed_submission_tps(0)
+                        .add_latency_threshold(max_lat_p50, LatencyType::P50)
+                        .add_latency_threshold(max_lat_p99, LatencyType::P99)
+                })
+                .collect(),
+        }))
+        // Test inherits the main EmitJobRequest, so update here for more precise latency measurements
+        .with_emit_job(
+            EmitJobRequest::default().latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            // no epoch change.
+            helm_values["chain"]["epoch_duration_secs"] = (24 * 3600).into();
+        }))
+        .with_success_criteria(
+            SuccessCriteria::new(0)
+                .add_no_restarts()
+                .add_wait_for_catchup_s(60)
+                .add_chain_progress(StateProgressThreshold {
+                    max_no_progress_secs: 30.0,
+                    max_round_gap: 10,
+                }),
+        )
+}
+
+/// This test runs a performance benchmark where the network includes
+/// PFNs, and the transactions are submitted to the PFNs. This is useful
+/// for measuring throughput and latency under a sub-optimal state sync workload.
+fn pfn_suboptimal_workload(duration: Duration) -> ForgeConfig {
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(10).unwrap())
+        .with_initial_fullnode_count(5)
+        .add_network_test(PFNPerformance)
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            // Require frequent epoch changes
+            helm_values["chain"]["epoch_duration_secs"] = 300.into();
+        }))
+        .with_emit_job(
+            EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 3000 })
+                .transaction_mix(vec![
+                    (
+                        TransactionTypeArg::AccountGeneration.materialize_default(),
+                        5,
+                    ),
+                    (TransactionTypeArg::PublishPackage.materialize_default(), 1),
+                    (
+                        TransactionTypeArg::AccountResource100KB.materialize(1, true),
+                        5,
+                    ),
+                    (
+                        TransactionTypeArg::AccountResource512KB.materialize(1, true),
+                        5,
+                    ),
+                    (
+                        TransactionTypeArg::AccountResource1MB.materialize(1, true),
+                        5,
+                    ),
+                    //(TransactionTypeArg::EmitEvents1K.materialize(1, true), 3),
+                    //(TransactionTypeArg::EmitEvents10K.materialize(1, true), 3),
+                    //(TransactionTypeArg::EmitEvents100K.materialize(1, true), 3),
+                ]),
+        )
+        .with_success_criteria(
+            SuccessCriteria::new(4500)
+                .add_no_restarts()
+                .add_wait_for_catchup_s(
+                    // Give at least 180s for catchup and at most 10% of the run
+                    (duration.as_secs() / 10).max(180),
                 )
                 .add_chain_progress(StateProgressThreshold {
                     max_no_progress_secs: 10.0,
