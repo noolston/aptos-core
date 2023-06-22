@@ -9,7 +9,7 @@ test("when token is set", async () => {
       endpoint: "accounts/0x1",
       body: null,
       originMethod: "test 200 status",
-      overrides: { token: "my-token" },
+      overrides: { TOKEN: "my-token" },
     });
     expect(response.config.headers).toHaveProperty("Authorization", "Bearer my-token");
   } catch (error: any) {
