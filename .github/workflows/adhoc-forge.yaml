@@ -49,7 +49,7 @@ jobs:
       forgeTestSuite: ${{ inputs.FORGE_TEST_SUITE }}
 
   adhoc-forge-test:
-    uses: aptos-labs/aptos-core/.github/workflows/workflow-run-forge.yaml@main
+    uses: ./.github/workflows/workflow-run-forge.yaml
     needs: [determine-forge-run-metadata]
     secrets: inherit
     with:
