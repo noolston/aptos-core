@@ -39,7 +39,10 @@ impl NetworkLoadTest for PFNPerformance {
 }
 
 /// Adds a number of PFNs to the network and returns the peer IDs
-fn create_and_add_pfns(ctx: &mut NetworkContext, num_pfns: u64) -> Result<Vec<PeerId>, Error> {
+pub(crate) fn create_and_add_pfns(
+    ctx: &mut NetworkContext,
+    num_pfns: u64,
+) -> Result<Vec<PeerId>, Error> {
     info!("Creating {} public fullnodes!", num_pfns);
 
     // Identify the version for the PFNs
@@ -49,7 +52,7 @@ fn create_and_add_pfns(ctx: &mut NetworkContext, num_pfns: u64) -> Result<Vec<Pe
     // Create the PFN swarm
     let runtime = Runtime::new().unwrap();
     let pfn_peer_ids: Vec<AccountAddress> = (0..num_pfns)
-        .map(|_| {
+        .map(|i| {
             // Create a config for the PFN. Note: this needs to be done here
             // because the config will generate a unique peer ID for the PFN.
             let pfn_config = swarm.get_default_pfn_node_config();
@@ -68,7 +71,7 @@ fn create_and_add_pfns(ctx: &mut NetworkContext, num_pfns: u64) -> Result<Vec<Pe
             }
 
             // Return the peer ID
-            info!("Created new PFN with peer ID: {:?}", peer_id);
+            info!("Created new PFN {:?} with peer ID: {:?}", i, peer_id);
             peer_id
         })
         .collect();

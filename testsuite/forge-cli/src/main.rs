@@ -543,6 +543,7 @@ fn single_test_suite(test_name: &str, duration: Duration) -> Result<ForgeConfig>
         "multiregion_benchmark_test" => multiregion_benchmark_test(),
         "pfn_const_tps" => pfn_const_tps(duration),
         "pfn_performance" => pfn_performance(duration),
+        "pfn_realistic_env_load_sweep_test" => pfn_realistic_env_load_sweep_test(duration),
         _ => return Err(format_err!("Invalid --suite given: {:?}", test_name)),
     };
     Ok(single_test_suite)
@@ -550,14 +551,16 @@ fn single_test_suite(test_name: &str, duration: Duration) -> Result<ForgeConfig>
 
 fn wrap_with_realistic_env<T: NetworkTest + 'static>(test: T) -> CompositeNetworkTest {
     CompositeNetworkTest::new_with_two_wrappers(
-        MultiRegionNetworkEmulationTest {
-            override_config: None,
-        },
+        MultiRegionNetworkEmulationTest::default(),
         CpuChaosTest {
             override_config: None,
         },
         test,
     )
+}
+
+fn wrap_with_realistic_network<T: NetworkTest + 'static>(test: T) -> CompositeNetworkTest {
+    CompositeNetworkTest::new(MultiRegionNetworkEmulationTest::default(), test)
 }
 
 fn run_consensus_only_three_region_simulation() -> ForgeConfig {
@@ -1510,9 +1513,7 @@ fn realistic_network_tuned_for_throughput_test() -> ForgeConfig {
         // something to potentially improve upon.
         // So having VFNs for all validators
         .with_initial_fullnode_count(12)
-        .add_network_test(MultiRegionNetworkEmulationTest {
-            override_config: None,
-        })
+        .add_network_test(MultiRegionNetworkEmulationTest::default())
         .with_emit_job(EmitJobRequest::default().mode(EmitJobMode::MaxLoad {
             mempool_backlog: 150000,
         }))
@@ -1784,9 +1785,7 @@ fn mainnet_like_simulation_test() -> ForgeConfig {
                 .txn_expiration_time_secs(5 * 60),
         )
         .add_network_test(CompositeNetworkTest::new(
-            MultiRegionNetworkEmulationTest {
-                override_config: None,
-            },
+            MultiRegionNetworkEmulationTest::default(),
             CpuChaosTest {
                 override_config: None,
             },
@@ -1898,6 +1897,55 @@ fn pfn_performance(duration: Duration) -> ForgeConfig {
                 .add_chain_progress(StateProgressThreshold {
                     max_no_progress_secs: 10.0,
                     max_round_gap: 4,
+                }),
+        )
+}
+
+/// This test runs a load sweeping benchmark where the network includes
+/// realistic latencies and PFNs. Transactions are submitted to the PFNs.
+/// This is useful for measuring network performance across loads.
+fn pfn_realistic_env_load_sweep_test(duration: Duration) -> ForgeConfig {
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(20).unwrap())
+        .with_initial_fullnode_count(10)
+        .add_network_test(wrap_with_realistic_network(LoadVsPerfBenchmark {
+            test: Box::new(MultiRegionNetworkEmulationTest::new(true, true, None)),
+            workloads: Workloads::TPS(&[10, 100, 1000, 3000, 5000]),
+            criteria: [
+                (9, 1.5, 3.),
+                (95, 1.5, 3.),
+                (950, 2., 3.),
+                (2750, 2.5, 4.),
+                (4600, 3., 5.),
+            ]
+            .into_iter()
+            .map(|(min_tps, max_lat_p50, max_lat_p99)| {
+                SuccessCriteria::new(min_tps)
+                    .add_max_expired_tps(0)
+                    .add_max_failed_submission_tps(0)
+                    .add_latency_threshold(max_lat_p50, LatencyType::P50)
+                    .add_latency_threshold(max_lat_p99, LatencyType::P99)
+            })
+            .collect(),
+        }))
+        .with_emit_job(
+            // Use more frequent latency polling to get more precise latency measurements
+            EmitJobRequest::default().latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            // Require frequent epoch changes
+            helm_values["chain"]["epoch_duration_secs"] = 300.into();
+        }))
+        .with_success_criteria(
+            SuccessCriteria::new(0)
+                .add_no_restarts()
+                .add_wait_for_catchup_s(
+                    // Give at least 60s for catchup and at most 10% of the run
+                    (duration.as_secs() / 10).max(60),
+                )
+                .add_chain_progress(StateProgressThreshold {
+                    max_no_progress_secs: 30.0,
+                    max_round_gap: 10,
                 }),
         )
 }

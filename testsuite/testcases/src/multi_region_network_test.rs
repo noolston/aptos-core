@@ -1,11 +1,12 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{LoadDestination, NetworkLoadTest};
+use crate::{public_fullnode_performance::create_and_add_pfns, LoadDestination, NetworkLoadTest};
 use aptos_forge::{GroupNetEm, NetworkContext, NetworkTest, Swarm, SwarmChaos, SwarmNetEm, Test};
 use aptos_logger::info;
 use aptos_types::PeerId;
 use itertools::{self, Itertools};
+use rand::{seq::SliceRandom, thread_rng};
 use std::collections::BTreeMap;
 
 /// The link stats are obtained from https://github.com/doitintl/intercloud-throughput/blob/master/results_202202/results.csv
@@ -34,16 +35,15 @@ fn get_link_stats_table() -> BTreeMap<String, BTreeMap<String, (u64, f64)>> {
     stats_table
 }
 
-pub(crate) fn chunk_validators(validators: Vec<PeerId>, num_groups: usize) -> Vec<Vec<PeerId>> {
-    let approx_chunk_size = validators.len() / num_groups;
+pub(crate) fn chunk_peers(peers: Vec<PeerId>, num_groups: usize) -> Vec<Vec<PeerId>> {
+    let approx_chunk_size = peers.len() / num_groups;
 
-    let chunks = validators.chunks_exact(approx_chunk_size);
+    let chunks = peers.chunks_exact(approx_chunk_size);
 
-    let mut validator_chunks: Vec<Vec<PeerId>> =
-        chunks.clone().map(|chunk| chunk.to_vec()).collect();
+    let mut peer_chunks: Vec<Vec<PeerId>> = chunks.clone().map(|chunk| chunk.to_vec()).collect();
 
-    // Get any remaining validators and add them to the first group
-    let remaining_validators: Vec<PeerId> = chunks
+    // Get any remaining peers and add them to the first group
+    let remaining_peers: Vec<PeerId> = chunks
         .remainder()
         .iter()
         // If `approx_validators_per_region` is 1, then it is possible we will have more regions than desired, so the
@@ -51,20 +51,20 @@ pub(crate) fn chunk_validators(validators: Vec<PeerId>, num_groups: usize) -> Ve
         .chain(chunks.skip(num_groups).flatten())
         .cloned()
         .collect();
-    if !remaining_validators.is_empty() {
-        validator_chunks[0].append(remaining_validators.to_vec().as_mut());
+    if !remaining_peers.is_empty() {
+        peer_chunks[0].append(remaining_peers.to_vec().as_mut());
     }
 
-    validator_chunks
+    peer_chunks
 }
 
-/// Creates a table of validators grouped by region. The validators divided into N groups, where N is the number of regions
-/// provided in the link stats table. Any remaining validators are added to the first group.
+/// Creates a table of peers grouped by region. The peers are divided into N groups, where N is the number of regions
+/// provided in the link stats table. Any remaining peers are added to the first group.
 fn create_link_stats_table_with_peer_groups(
-    validators: Vec<PeerId>,
+    peers: Vec<PeerId>,
     link_stats_table: &LinkStatsTable,
 ) -> LinkStatsTableWithPeerGroups {
-    assert!(validators.len() >= link_stats_table.len());
+    assert!(peers.len() >= link_stats_table.len());
 
     let number_of_regions = link_stats_table.len();
     assert!(
@@ -76,20 +76,20 @@ fn create_link_stats_table_with_peer_groups(
         "ChaosMesh only supports simulating up to 4 regions."
     );
 
-    let validator_chunks = chunk_validators(validators, number_of_regions);
+    let peer_chunks = chunk_peers(peers, number_of_regions);
 
-    let validator_groups = validator_chunks
+    let peer_groups = peer_chunks
         .into_iter()
         .zip(link_stats_table.iter())
         .map(|(chunk, (from_region, stats))| (from_region.clone(), chunk, stats.clone()))
         .collect();
 
-    validator_groups
+    peer_groups
 }
 
 // A map of "source" regions to a map of "destination" region to (bandwidth, latency)
 type LinkStatsTable = BTreeMap<String, BTreeMap<String, (u64, f64)>>;
-// A map of "source" regions to a tuple of (list of validators, map of "destination" region to (bandwidth, latency))
+// A map of "source" regions to a tuple of (list of peers, map of "destination" region to (bandwidth, latency))
 type LinkStatsTableWithPeerGroups = Vec<(String, Vec<PeerId>, BTreeMap<String, (u64, f64)>)>;
 
 #[derive(Clone)]
@@ -113,8 +113,8 @@ impl Default for InterRegionNetEmConfig {
 
 impl InterRegionNetEmConfig {
     // Creates GroupNetEm for inter-region network chaos
-    fn build(&self, validator_groups: &LinkStatsTableWithPeerGroups) -> Vec<GroupNetEm> {
-        let group_netems: Vec<GroupNetEm> = validator_groups
+    fn build(&self, peer_groups: &LinkStatsTableWithPeerGroups) -> Vec<GroupNetEm> {
+        let group_netems: Vec<GroupNetEm> = peer_groups
             .iter()
             .combinations(2)
             .map(|comb| {
@@ -167,8 +167,8 @@ impl Default for IntraRegionNetEmConfig {
 }
 
 impl IntraRegionNetEmConfig {
-    fn build(&self, validator_groups: LinkStatsTableWithPeerGroups) -> Vec<GroupNetEm> {
-        let group_netems: Vec<GroupNetEm> = validator_groups
+    fn build(&self, peer_groups: LinkStatsTableWithPeerGroups) -> Vec<GroupNetEm> {
+        let group_netems: Vec<GroupNetEm> = peer_groups
             .iter()
             .map(|(region, chunk, _)| {
                 let netem = GroupNetEm {
@@ -211,16 +211,69 @@ impl Default for MultiRegionNetworkEmulationConfig {
 
 /// A test to emulate network conditions for a multi-region setup.
 pub struct MultiRegionNetworkEmulationTest {
-    pub override_config: Option<MultiRegionNetworkEmulationConfig>,
+    pub add_chaos_to_validators: bool,
+    pub add_chaos_to_fullnodes: bool,
+    pub override_emulation_config: Option<MultiRegionNetworkEmulationConfig>,
+}
+
+/// The default implementation is typically used by most tests
+impl Default for MultiRegionNetworkEmulationTest {
+    fn default() -> Self {
+        MultiRegionNetworkEmulationTest {
+            add_chaos_to_validators: true,
+            add_chaos_to_fullnodes: false,
+            override_emulation_config: None,
+        }
+    }
 }
 
 impl MultiRegionNetworkEmulationTest {
+    pub fn new(
+        add_chaos_to_validators: bool,
+        add_chaos_to_fullnodes: bool,
+        override_emulation_config: Option<MultiRegionNetworkEmulationConfig>,
+    ) -> Self {
+        MultiRegionNetworkEmulationTest {
+            add_chaos_to_validators,
+            add_chaos_to_fullnodes,
+            override_emulation_config,
+        }
+    }
+
     fn create_netem_chaos(&self, swarm: &mut dyn Swarm) -> SwarmNetEm {
-        let all_validators = swarm.validators().map(|v| v.peer_id()).collect::<Vec<_>>();
+        // Ensure that chaos is being added somewhere
+        if !self.add_chaos_to_validators && !self.add_chaos_to_fullnodes {
+            panic!("No chaos is being added to the network! Use a different test?");
+        }
 
-        let config = self.override_config.clone().unwrap_or_default();
+        // Determine the emulation config to use
+        let emulation_config = self.override_emulation_config.clone().unwrap_or_default();
 
-        create_multi_region_swarm_network_chaos(all_validators, &config)
+        // Identify the validator peer IDs for chaos
+        let validators_to_add_chaos = if self.add_chaos_to_validators {
+            swarm.validators().map(|v| v.peer_id()).collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
+        // Identify the fullnode peer IDs for chaos (includes validator fullnodes and public fullnodes)
+        let fullnodes_to_add_chaos = if self.add_chaos_to_fullnodes {
+            swarm.full_nodes().map(|v| v.peer_id()).collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
+        // Combine all of the peer IDs that we should add chaos to.
+        // Note: we shuffle the peer IDs to ensure that the chaos
+        // is distributed randomly across the node types.
+        let mut peer_ids_for_chaos = validators_to_add_chaos
+            .into_iter()
+            .chain(fullnodes_to_add_chaos)
+            .collect::<Vec<_>>();
+        peer_ids_for_chaos.shuffle(&mut thread_rng());
+
+        // Create the network chaos
+        create_multi_region_swarm_network_chaos(peer_ids_for_chaos, &emulation_config)
     }
 }
 
@@ -231,17 +284,16 @@ impl Test for MultiRegionNetworkEmulationTest {
 }
 
 fn create_multi_region_swarm_network_chaos(
-    all_validators: Vec<PeerId>,
+    all_peers: Vec<PeerId>,
     config: &MultiRegionNetworkEmulationConfig,
 ) -> SwarmNetEm {
-    let validator_groups =
-        create_link_stats_table_with_peer_groups(all_validators, &config.link_stats_table);
+    let peer_groups = create_link_stats_table_with_peer_groups(all_peers, &config.link_stats_table);
 
-    let inter_region_netem = config.inter_region_config.build(&validator_groups);
+    let inter_region_netem = config.inter_region_config.build(&peer_groups);
     let intra_region_netem = config
         .intra_region_config
         .as_ref()
-        .map(|config| config.build(validator_groups))
+        .map(|config| config.build(peer_groups))
         .unwrap_or_default();
 
     SwarmNetEm {
@@ -251,10 +303,16 @@ fn create_multi_region_swarm_network_chaos(
 
 impl NetworkLoadTest for MultiRegionNetworkEmulationTest {
     fn setup(&self, ctx: &mut NetworkContext) -> anyhow::Result<LoadDestination> {
+        // Add the PFNs to the swarm
+        let num_pfns = 5;
+        let pfn_peer_ids = create_and_add_pfns(ctx, num_pfns)?;
+
+        // Inject the network chaos
         let chaos = self.create_netem_chaos(ctx.swarm());
         ctx.swarm().inject_chaos(SwarmChaos::NetEm(chaos))?;
 
-        Ok(LoadDestination::FullnodesOtherwiseValidators)
+        // Use the PFNs as the load destination
+        Ok(LoadDestination::Peers(pfn_peer_ids))
     }
 
     fn finish(&self, swarm: &mut dyn Swarm) -> anyhow::Result<()> {
