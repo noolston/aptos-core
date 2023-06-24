@@ -70,6 +70,7 @@ return true.
     -  [Resource `Features`](#@Specification_1_Features)
     -  [Function `periodical_reward_rate_decrease_enabled`](#@Specification_1_periodical_reward_rate_decrease_enabled)
     -  [Function `partial_governance_voting_enabled`](#@Specification_1_partial_governance_voting_enabled)
+    -  [Function `gas_payer_enabled`](#@Specification_1_gas_payer_enabled)
     -  [Function `change_feature_flags`](#@Specification_1_change_feature_flags)
     -  [Function `is_enabled`](#@Specification_1_is_enabled)
     -  [Function `set`](#@Specification_1_set)
@@ -1183,8 +1184,8 @@ Helper to check whether a feature flag is enabled.
 
 <pre><code><b>fun</b> <a href="features.md#0x1_features_contains">contains</a>(<a href="features.md#0x1_features">features</a>: &<a href="vector.md#0x1_vector">vector</a>&lt;u8&gt;, feature: u64): bool {
     <b>let</b> byte_index = feature / 8;
-    <b>let</b> bit_mask = 1 &lt;&lt; ((feature % 8) <b>as</b> u8);
-    byte_index &lt; <a href="vector.md#0x1_vector_length">vector::length</a>(<a href="features.md#0x1_features">features</a>) && (*<a href="vector.md#0x1_vector_borrow">vector::borrow</a>(<a href="features.md#0x1_features">features</a>, byte_index) & bit_mask) != 0
+    <b>let</b> bit_mask = ((1 <b>as</b> u8) &lt;&lt; ((feature % (8 <b>as</b> u64)) <b>as</b> u8) <b>as</b> u8);
+    byte_index &lt; <a href="vector.md#0x1_vector_length">vector::length</a>(<a href="features.md#0x1_features">features</a>) && (*<a href="vector.md#0x1_vector_borrow">vector::borrow</a>(<a href="features.md#0x1_features">features</a>, byte_index) & bit_mask) != (0 <b>as</b> u8)
 }
 </code></pre>
 
@@ -1236,7 +1237,7 @@ Helper to check whether a feature flag is enabled.
 
 <pre><code><b>pragma</b> opaque;
 <b>aborts_if</b> [abstract] <b>false</b>;
-<b>ensures</b> [abstract] result == <a href="features.md#0x1_features_spec_periodical_reward_rate_decrease_enabled">spec_periodical_reward_rate_decrease_enabled</a>();
+<b>ensures</b> result == <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(<a href="features.md#0x1_features_PERIODICAL_REWARD_RATE_DECREASE">PERIODICAL_REWARD_RATE_DECREASE</a>);
 </code></pre>
 
 
@@ -1265,7 +1266,25 @@ Helper to check whether a feature flag is enabled.
 
 <pre><code><b>pragma</b> opaque;
 <b>aborts_if</b> [abstract] <b>false</b>;
-<b>ensures</b> [abstract] result == <a href="features.md#0x1_features_spec_partial_governance_voting_enabled">spec_partial_governance_voting_enabled</a>();
+<b>ensures</b> result == <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(<a href="features.md#0x1_features_PARTIAL_GOVERNANCE_VOTING">PARTIAL_GOVERNANCE_VOTING</a>);
+</code></pre>
+
+
+
+<a name="@Specification_1_gas_payer_enabled"></a>
+
+### Function `gas_payer_enabled`
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="features.md#0x1_features_gas_payer_enabled">gas_payer_enabled</a>(): bool
+</code></pre>
+
+
+
+
+<pre><code><b>pragma</b> opaque;
+<b>aborts_if</b> [abstract] <b>false</b>;
+<b>ensures</b> result == <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(<a href="features.md#0x1_features_GAS_PAYER_ENABLED">GAS_PAYER_ENABLED</a>);
 </code></pre>
 
 
@@ -1301,7 +1320,10 @@ Helper to check whether a feature flag is enabled.
 
 <pre><code><b>pragma</b> opaque;
 <b>aborts_if</b> [abstract] <b>false</b>;
-<b>ensures</b> [abstract] result == <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(feature);
+<b>ensures</b> !<b>exists</b>&lt;<a href="features.md#0x1_features_Features">Features</a>&gt;(@std) ==&gt; result == <b>false</b>;
+<b>ensures</b> <b>exists</b>&lt;<a href="features.md#0x1_features_Features">Features</a>&gt;(@std) ==&gt; result ==
+    <a href="features.md#0x1_features_spec_contains">spec_contains</a>(<b>borrow_global</b>&lt;<a href="features.md#0x1_features_Features">Features</a>&gt;(@std).<a href="features.md#0x1_features">features</a>, feature);
+<b>ensures</b> result == <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(feature);
 </code></pre>
 
 
@@ -1310,7 +1332,9 @@ Helper to check whether a feature flag is enabled.
 <a name="0x1_features_spec_is_enabled"></a>
 
 
-<pre><code><b>fun</b> <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(feature: u64): bool;
+<pre><code><b>fun</b> <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(feature: u64): bool {
+   <b>exists</b>&lt;<a href="features.md#0x1_features_Features">Features</a>&gt;(@std) && <a href="features.md#0x1_features_spec_contains">spec_contains</a>(<b>borrow_global</b>&lt;<a href="features.md#0x1_features_Features">Features</a>&gt;(@std).<a href="features.md#0x1_features">features</a>, feature)
+}
 </code></pre>
 
 
@@ -1321,17 +1345,6 @@ Helper to check whether a feature flag is enabled.
 
 <pre><code><b>fun</b> <a href="features.md#0x1_features_spec_periodical_reward_rate_decrease_enabled">spec_periodical_reward_rate_decrease_enabled</a>(): bool {
    <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(<a href="features.md#0x1_features_PERIODICAL_REWARD_RATE_DECREASE">PERIODICAL_REWARD_RATE_DECREASE</a>)
-}
-</code></pre>
-
-
-
-
-<a name="0x1_features_spec_gas_payer_enabled"></a>
-
-
-<pre><code><b>fun</b> <a href="features.md#0x1_features_spec_gas_payer_enabled">spec_gas_payer_enabled</a>(): bool {
-   <a href="features.md#0x1_features_spec_is_enabled">spec_is_enabled</a>(<a href="features.md#0x1_features_GAS_PAYER_ENABLED">GAS_PAYER_ENABLED</a>)
 }
 </code></pre>
 
@@ -1368,6 +1381,7 @@ Helper to check whether a feature flag is enabled.
 
 
 <pre><code><b>pragma</b> bv=b"0";
+<b>pragma</b> opaque;
 <b>aborts_if</b> <b>false</b>;
 <b>ensures</b> result == <a href="features.md#0x1_features_spec_contains">spec_contains</a>(<a href="features.md#0x1_features">features</a>, feature);
 </code></pre>

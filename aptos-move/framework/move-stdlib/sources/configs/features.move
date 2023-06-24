@@ -251,8 +251,8 @@ module std::features {
     /// Helper to check whether a feature flag is enabled.
     fun contains(features: &vector<u8>, feature: u64): bool {
         let byte_index = feature / 8;
-        let bit_mask = 1 << ((feature % 8) as u8);
-        byte_index < vector::length(features) && (*vector::borrow(features, byte_index) & bit_mask) != 0
+        let bit_mask = ((1 as u8) << ((feature % (8 as u64)) as u8) as u8);
+        byte_index < vector::length(features) && (*vector::borrow(features, byte_index) & bit_mask) != (0 as u8)
     }
 
     #[test]

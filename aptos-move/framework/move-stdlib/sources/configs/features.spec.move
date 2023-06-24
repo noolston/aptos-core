@@ -13,6 +13,7 @@ spec std::features {
 
     spec contains(features: &vector<u8>, feature: u64): bool {
         pragma bv=b"0";
+        pragma opaque;
         aborts_if false;
         ensures result == spec_contains(features, feature);
     }
@@ -32,23 +33,31 @@ spec std::features {
     spec is_enabled(feature: u64): bool {
         pragma opaque;
         aborts_if [abstract] false;
-        ensures [abstract] result == spec_is_enabled(feature);
+        ensures !exists<Features>(@std) ==> result == false;
+        ensures exists<Features>(@std) ==> result ==
+            spec_contains(borrow_global<Features>(@std).features, feature);
+        ensures result == spec_is_enabled(feature);
     }
 
-    spec fun spec_is_enabled(feature: u64): bool;
+    spec fun spec_is_enabled(feature: u64): bool {
+        exists<Features>(@std) && spec_contains(borrow_global<Features>(@std).features, feature)
+    }
 
     spec fun spec_periodical_reward_rate_decrease_enabled(): bool {
         spec_is_enabled(PERIODICAL_REWARD_RATE_DECREASE)
     }
 
-    spec fun spec_gas_payer_enabled(): bool {
-        spec_is_enabled(GAS_PAYER_ENABLED)
+    spec gas_payer_enabled {
+        pragma opaque;
+        aborts_if [abstract] false;
+        ensures result == spec_is_enabled(GAS_PAYER_ENABLED);
     }
+
 
     spec periodical_reward_rate_decrease_enabled {
         pragma opaque;
         aborts_if [abstract] false;
-        ensures [abstract] result == spec_periodical_reward_rate_decrease_enabled();
+        ensures result == spec_is_enabled(PERIODICAL_REWARD_RATE_DECREASE);
     }
 
     spec fun spec_partial_governance_voting_enabled(): bool {
@@ -58,6 +67,6 @@ spec std::features {
     spec partial_governance_voting_enabled {
         pragma opaque;
         aborts_if [abstract] false;
-        ensures [abstract] result == spec_partial_governance_voting_enabled();
+        ensures result == spec_is_enabled(PARTIAL_GOVERNANCE_VOTING);
     }
 }
