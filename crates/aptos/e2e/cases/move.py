@@ -105,3 +105,26 @@ def test_move_compile_script(run_helper: RunHelper, test_name=None):
 
     if "script_hash" not in response.stdout:
         raise TestError("Script did not compile successfully")
+
+
+@test_case
+def test_move_view(run_helper: RunHelper, test_name=None):
+    account_info = run_helper.get_account_info()
+
+    # Run the view function
+    response = run_helper.run_command(
+        test_name,
+        [
+            "aptos",
+            "move",
+            "view",
+            "--function-id",
+            "0x1::account::exists_at",
+            "--args",
+            f"address:{account_info.account_address}",
+        ],
+    )
+
+    response = json.loads(response.stdout)
+    if response["Result"] == None or response["Result"][0] != True:
+        raise TestError("View function did not return correct result")
