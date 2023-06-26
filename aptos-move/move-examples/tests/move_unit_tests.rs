@@ -203,3 +203,12 @@ fn test_nft_dao_test() {
     )]);
     run_tests_for_pkg("dao/nft_dao", named_address);
 }
+
+#[test]
+fn test_coin_wrapper() {
+    let named_address = BTreeMap::from([(
+        String::from("coin_wrapper"),
+        AccountAddress::from_hex_literal("0xcafe").unwrap(),
+    )]);
+    run_tests_for_pkg("fungible_asset/coin_wrapper", named_address);
+}
