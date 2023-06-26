@@ -3,6 +3,14 @@
 This file keeps track of the changes for indexer grpc.
 
 
+## [1.0.1] - 2023.06.23
+
+* Improves the network reliability: with unstable network, it's possible the stream connection is lost without notice. Add `HTTP2 PING` to health check the connection. [PR](https://github.com/aptos-labs/aptos-core/pull/8696)
+
+* Add FileStoreOperator variant local storage, i.e., `local` to faciliate testing. [PR](https://github.com/aptos-labs/aptos-core/pull/8250)
+
+* Support TLS at data service. [PR](https://github.com/aptos-labs/aptos-core/pull/8632)  
+
 ## [1.0.0] - 2023.05.23
 
 * Remove `testing` from the protobuf package path; we're going to exit alpha testing! [PR](https://github.com/aptos-labs/aptos-core/pull/8277)
