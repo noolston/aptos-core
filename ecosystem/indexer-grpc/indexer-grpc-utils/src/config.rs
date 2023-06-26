@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GcsFileStore {
     pub gcs_file_store_bucket_name: String,
-    // TODO: consider adding credentials_path, rather than relying on default location
+    pub gcs_file_store_service_account_key_path: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
