@@ -20,7 +20,7 @@ use tokio::sync::{
 /// the first round we care about in the DAG, `exists_bitmask` is a two dimensional bitmask represents
 /// if a node exist at [start_round + index][validator_index].
 #[derive(Serialize, Deserialize, Clone)]
-struct FetchRequest {
+struct RemoteFetchRequest {
     target: NodeMetadata,
     start_round: Round,
     exists_bitmask: Vec<Vec<bool>>,
@@ -37,14 +37,14 @@ struct FetchResponse {
 impl FetchResponse {
     pub fn verify(
         self,
-        _request: &FetchRequest,
+        _request: &RemoteFetchRequest,
         _validator_verifier: &ValidatorVerifier,
     ) -> anyhow::Result<Self> {
         todo!("verification");
     }
 }
 
-impl DAGMessage for FetchRequest {
+impl DAGMessage for RemoteFetchRequest {
     fn epoch(&self) -> u64 {
         self.target.epoch()
     }
@@ -56,27 +56,34 @@ impl DAGMessage for FetchResponse {
     }
 }
 
-enum FetchCallback {
+pub enum LocalFetchRequest {
     Node(Node, oneshot::Sender<Node>),
     CertifiedNode(CertifiedNode, oneshot::Sender<CertifiedNode>),
 }
 
-impl FetchCallback {
+impl LocalFetchRequest {
     pub fn responders(&self, validators: &[Author]) -> Vec<Author> {
         match self {
-            FetchCallback::Node(node, _) => vec![*node.author()],
-            FetchCallback::CertifiedNode(node, _) => node.certificate().signers(validators),
+            LocalFetchRequest::Node(node, _) => vec![*node.author()],
+            LocalFetchRequest::CertifiedNode(node, _) => node.certificate().signers(validators),
         }
     }
 
     pub fn notify(self) {
         if match self {
-            FetchCallback::Node(node, sender) => sender.send(node).map_err(|_| ()),
-            FetchCallback::CertifiedNode(node, sender) => sender.send(node).map_err(|_| ()),
+            LocalFetchRequest::Node(node, sender) => sender.send(node).map_err(|_| ()),
+            LocalFetchRequest::CertifiedNode(node, sender) => sender.send(node).map_err(|_| ()),
         }
         .is_err()
         {
             error!("Failed to send node back");
+        }
+    }
+
+    pub fn node(&self) -> &Node {
+        match self {
+            LocalFetchRequest::Node(node, _) => node,
+            LocalFetchRequest::CertifiedNode(node, _) => node,
         }
     }
 }
@@ -85,7 +92,7 @@ struct DagFetcher {
     epoch_state: Arc<EpochState>,
     network: Arc<dyn DAGNetworkSender>,
     dag: Arc<RwLock<Dag>>,
-    request_rx: Receiver<(FetchRequest, FetchCallback)>,
+    request_rx: Receiver<LocalFetchRequest>,
 }
 
 impl DagFetcher {
@@ -93,7 +100,7 @@ impl DagFetcher {
         epoch_state: Arc<EpochState>,
         network: Arc<dyn DAGNetworkSender>,
         dag: Arc<RwLock<Dag>>,
-    ) -> (Self, Sender<(FetchRequest, FetchCallback)>) {
+    ) -> (Self, Sender<LocalFetchRequest>) {
         let (request_tx, request_rx) = tokio::sync::mpsc::channel(16);
         (
             Self {
@@ -107,16 +114,28 @@ impl DagFetcher {
     }
 
     pub async fn start(mut self) {
-        while let Some((request, callback)) = self.request_rx.recv().await {
-            let responders =
-                callback.responders(&self.epoch_state.verifier.get_ordered_account_addresses());
-            let network_request = request.clone().into_network_message();
+        while let Some(local_request) = self.request_rx.recv().await {
+            let responders = local_request
+                .responders(&self.epoch_state.verifier.get_ordered_account_addresses());
+            let remote_request = {
+                let dag_reader = self.dag.read();
+                if dag_reader.all_exists(local_request.node().parents()) {
+                    local_request.notify();
+                    continue;
+                }
+                RemoteFetchRequest {
+                    target: local_request.node().metadata().clone(),
+                    start_round: dag_reader.lowest_round(),
+                    exists_bitmask: dag_reader.bitmask(),
+                }
+            };
+            let network_request = remote_request.clone().into_network_message();
             if let Ok(response) = self
                 .network
                 .send_rpc_with_fallbacks(responders, network_request, Duration::from_secs(1))
                 .await
                 .and_then(FetchResponse::from_network_message)
-                .and_then(|response| response.verify(&request, &self.epoch_state.verifier))
+                .and_then(|response| response.verify(&remote_request, &self.epoch_state.verifier))
             {
                 // TODO: support chunk response or fallback to state sync
                 let mut dag_writer = self.dag.write();
@@ -127,7 +146,7 @@ impl DagFetcher {
                         }
                     }
                 }
-                callback.notify();
+                local_request.notify();
             }
         }
     }

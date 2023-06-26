@@ -32,7 +32,7 @@ impl Dag {
         }
     }
 
-    fn lowest_round(&self) -> Round {
+    pub fn lowest_round(&self) -> Round {
         *self
             .nodes_by_round
             .first_key_value()
@@ -40,7 +40,7 @@ impl Dag {
             .unwrap_or(&0)
     }
 
-    fn highest_round(&self) -> Round {
+    pub fn highest_round(&self) -> Round {
         *self
             .nodes_by_round
             .last_key_value()
@@ -79,8 +79,10 @@ impl Dag {
         self.nodes_by_digest.contains_key(digest)
     }
 
-    pub fn all_exists<'a>(&self, mut digests: impl Iterator<Item = &'a HashValue>) -> bool {
-        digests.all(|digest| self.nodes_by_digest.contains_key(digest))
+    pub fn all_exists(&self, nodes: &[NodeMetadata]) -> bool {
+        nodes
+            .iter()
+            .all(|metadata| self.nodes_by_digest.contains_key(metadata.digest()))
     }
 
     pub fn get_node(&self, digest: &HashValue) -> Option<Arc<CertifiedNode>> {
@@ -109,5 +111,10 @@ impl Dag {
         } else {
             None
         }
+    }
+
+    pub fn bitmask(&self) -> Vec<Vec<bool>> {
+        // TODO: extract local bitvec
+        vec![]
     }
 }
