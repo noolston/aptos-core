@@ -667,6 +667,7 @@ dependencies = [
  "aptos-consensus-types",
  "aptos-crypto",
  "aptos-crypto-derive",
+ "aptos-enum-msg-derive",
  "aptos-event-notifications",
  "aptos-executor",
  "aptos-executor-test-helpers",
@@ -1034,6 +1035,16 @@ dependencies = [
  "move-vm-test-utils",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "aptos-enum-msg-derive"
+version = "0.0.3"
+dependencies = [
+ "anyhow",
+ "proc-macro2 1.0.59",
+ "quote 1.0.28",
+ "syn 1.0.105",
 ]
 
 [[package]]

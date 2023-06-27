@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    dag::reliable_broadcast::BroadcastStatus, network::TConsensusMsg,
-    network_interface::ConsensusMsg,
+    dag::reliable_broadcast::BroadcastStatus, network::TConsensusMsg, network_interface::ConsensusMsg,
 };
 use anyhow::ensure;
 use aptos_consensus_types::common::{Author, Payload, Round};
@@ -14,6 +13,7 @@ use aptos_crypto::{
     CryptoMaterialError, HashValue,
 };
 use aptos_crypto_derive::CryptoHasher;
+use aptos_enum_msg_derive::EnumMessage;
 use aptos_types::{
     aggregate_signature::{AggregateSignature, PartialSignatures},
     epoch_state::EpochState,
@@ -125,7 +125,8 @@ impl CryptoHash for NodeDigest {
 }
 
 /// Node representation in the DAG, parents contain 2f+1 strong links (links to previous round)
-#[derive(Clone, Serialize, Deserialize, CryptoHasher, Debug)]
+#[derive(Clone, Serialize, Deserialize, CryptoHasher, Debug, EnumMessage)]
+#[enum_variant(DAGMessage)]
 pub struct Node {
     metadata: NodeMetadata,
     payload: Payload,
@@ -227,7 +228,8 @@ impl TDAGMessage for Node {
 }
 
 /// Quorum signatures over the node digest
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, EnumMessage)]
+#[enum_variant(DAGMessage)]
 pub struct NodeCertificate {
     metadata: NodeMetadata,
     signatures: AggregateSignature,
@@ -287,7 +289,8 @@ impl Deref for CertifiedNode {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, EnumMessage)]
+#[enum_variant(DAGMessage)]
 pub struct NodeDigestSignature {
     epoch: u64,
     digest: HashValue,
@@ -362,7 +365,8 @@ impl CertificateAckState {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, EnumMessage)]
+#[enum_variant(DAGMessage)]
 pub struct CertifiedAck {
     epoch: u64,
 }
@@ -385,7 +389,8 @@ impl BroadcastStatus for CertificateAckState {
 /// Represents a request to fetch missing dependencies for `target`, `start_round` represents
 /// the first round we care about in the DAG, `exists_bitmask` is a two dimensional bitmask represents
 /// if a node exist at [start_round + index][validator_index].
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, EnumMessage)]
+#[enum_variant(DAGMessage)]
 pub struct FetchRequest {
     target: NodeMetadata,
     start_round: Round,
@@ -394,7 +399,8 @@ pub struct FetchRequest {
 
 /// Represents a response to FetchRequest, `certified_nodes` are indexed by [round][validator_index]
 /// It should fill in gaps from the `exists_bitmask` according to the parents from the `target_digest` node.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, EnumMessage)]
+#[enum_variant(DAGMessage)]
 pub struct FetchResponse {
     epoch: u64,
     certifies_nodes: Vec<Vec<CertifiedNode>>,
@@ -427,8 +433,8 @@ pub enum DAGMessage {
     NodeDigestSignatureMsg(NodeDigestSignature),
     NodeCertificateMsg(NodeCertificate),
     CertifiedAckMsg(CertifiedAck),
-    FetchRequest(FetchRequest),
-    FetchResponse(FetchResponse),
+    FetchRequestMsg(FetchRequest),
+    FetchResponseMsg(FetchResponse),
 
     #[cfg(test)]
     TestMessage(TestMessage),
@@ -443,8 +449,8 @@ impl DAGMessage {
             DAGMessage::NodeDigestSignatureMsg(_) => "NodeDigestSignatureMsg",
             DAGMessage::NodeCertificateMsg(_) => "NodeCertificateMsg",
             DAGMessage::CertifiedAckMsg(_) => "CertifiedAckMsg",
-            DAGMessage::FetchRequest(_) => "FetchRequest",
-            DAGMessage::FetchResponse(_) => "FetchResponse",
+            DAGMessage::FetchRequestMsg(_) => "FetchRequest",
+            DAGMessage::FetchResponseMsg(_) => "FetchResponse",
             #[cfg(test)]
             DAGMessage::TestMessage(_) => "TestMessage",
             #[cfg(test)]
@@ -460,8 +466,8 @@ impl TConsensusMsg for DAGMessage {
             DAGMessage::NodeDigestSignatureMsg(signature) => signature.epoch,
             DAGMessage::NodeCertificateMsg(certificate) => certificate.metadata.epoch,
             DAGMessage::CertifiedAckMsg(ack) => ack.epoch,
-            DAGMessage::FetchRequest(req) => req.target.epoch,
-            DAGMessage::FetchResponse(res) => res.epoch,
+            DAGMessage::FetchRequestMsg(req) => req.target.epoch,
+            DAGMessage::FetchResponseMsg(res) => res.epoch,
             #[cfg(test)]
             DAGMessage::TestMessage(_) => 1,
             #[cfg(test)]
@@ -475,108 +481,6 @@ impl TryFrom<ConsensusMsg> for DAGMessage {
 
     fn try_from(msg: ConsensusMsg) -> Result<Self, Self::Error> {
         TConsensusMsg::from_network_message(msg)
-    }
-}
-
-impl TryFrom<DAGMessage> for Node {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: DAGMessage) -> Result<Self, Self::Error> {
-        match msg {
-            DAGMessage::NodeMsg(node) => Ok(node),
-            _ => Err(anyhow::anyhow!("invalid message type")),
-        }
-    }
-}
-
-impl TryFrom<DAGMessage> for NodeDigestSignature {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: DAGMessage) -> Result<Self, Self::Error> {
-        match msg {
-            DAGMessage::NodeDigestSignatureMsg(node) => Ok(node),
-            _ => Err(anyhow::anyhow!("invalid message type")),
-        }
-    }
-}
-
-impl TryFrom<DAGMessage> for NodeCertificate {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: DAGMessage) -> Result<Self, Self::Error> {
-        match msg {
-            DAGMessage::NodeCertificateMsg(certificate) => Ok(certificate),
-            _ => Err(anyhow::anyhow!("invalid message type")),
-        }
-    }
-}
-
-impl TryFrom<DAGMessage> for CertifiedAck {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: DAGMessage) -> Result<Self, Self::Error> {
-        match msg {
-            DAGMessage::CertifiedAckMsg(ack) => Ok(ack),
-            _ => Err(anyhow::anyhow!("invalid message type")),
-        }
-    }
-}
-
-impl TryFrom<DAGMessage> for FetchRequest {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: DAGMessage) -> Result<Self, Self::Error> {
-        match msg {
-            DAGMessage::FetchRequest(req) => Ok(req),
-            _ => Err(anyhow::anyhow!("invalid message type")),
-        }
-    }
-}
-
-impl TryFrom<DAGMessage> for FetchResponse {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: DAGMessage) -> Result<Self, Self::Error> {
-        match msg {
-            DAGMessage::FetchResponse(res) => Ok(res),
-            _ => Err(anyhow::anyhow!("invalid message type")),
-        }
-    }
-}
-
-impl From<Node> for DAGMessage {
-    fn from(node: Node) -> Self {
-        Self::NodeMsg(node)
-    }
-}
-
-impl From<NodeDigestSignature> for DAGMessage {
-    fn from(signature: NodeDigestSignature) -> Self {
-        Self::NodeDigestSignatureMsg(signature)
-    }
-}
-
-impl From<NodeCertificate> for DAGMessage {
-    fn from(node: NodeCertificate) -> Self {
-        Self::NodeCertificateMsg(node)
-    }
-}
-
-impl From<CertifiedAck> for DAGMessage {
-    fn from(ack: CertifiedAck) -> Self {
-        Self::CertifiedAckMsg(ack)
-    }
-}
-
-impl From<FetchRequest> for DAGMessage {
-    fn from(req: FetchRequest) -> Self {
-        Self::FetchRequest(req)
-    }
-}
-
-impl From<FetchResponse> for DAGMessage {
-    fn from(response: FetchResponse) -> Self {
-        Self::FetchResponse(response)
     }
 }
 

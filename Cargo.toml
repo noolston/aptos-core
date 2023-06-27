@@ -45,6 +45,7 @@ members = [
     "crates/aptos-compression",
     "crates/aptos-crypto",
     "crates/aptos-crypto-derive",
+    "crates/aptos-enum-msg-derive",
     "crates/aptos-faucet/cli",
     "crates/aptos-faucet/core",
     "crates/aptos-faucet/metrics-server",
@@ -279,6 +280,7 @@ aptos-event-notifications = { path = "state-sync/inter-component/event-notificat
 aptos-executable-store = { path = "storage/executable-store" }
 aptos-executor = { path = "execution/executor" }
 aptos-block-partitioner = { path = "execution/block-partitioner" }
+aptos-enum-msg-derive = { path = "crates/aptos-enum-msg-derive" }
 aptos-executor-service = { path = "execution/executor-service" }
 aptos-executor-test-helpers = { path = "execution/executor-test-helpers" }
 aptos-executor-types = { path = "execution/executor-types" }
